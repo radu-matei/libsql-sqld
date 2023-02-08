@@ -1,4 +1,3 @@
-import fetch from "cross-fetch";
 import { ResultSet, BoundStatement, Params } from "../libsql-js";
 import { Driver } from "./Driver";
 
@@ -26,7 +25,7 @@ export class HttpDriver implements Driver {
 
         const statements = buildStatements(["BEGIN", ...stmts, "COMMIT"]);
 
-        const response = await fetch(this.url, {
+        const response = await fetch(this.url.toString(), {
             method: "POST",
             body: JSON.stringify(statements)
         });

@@ -12,8 +12,9 @@
 use std::collections::HashMap;
 use std::iter::IntoIterator;
 
+use anyhow::{bail, Context, Result};
 use base64::Engine;
-use worker::*;
+use serde_json::Value;
 
 pub mod statement;
 pub use statement::Statement;
@@ -53,7 +54,7 @@ pub enum QueryResult {
 #[derive(Clone, Debug)]
 pub struct Connection {
     url: String,
-    auth: String,
+    // auth: String,
 }
 
 fn parse_columns(columns: Vec<serde_json::Value>, result_idx: usize) -> Result<Vec<String>> {
@@ -62,9 +63,9 @@ fn parse_columns(columns: Vec<serde_json::Value>, result_idx: usize) -> Result<V
         match column {
             serde_json::Value::String(column) => result.push(column),
             _ => {
-                return Err(worker::Error::from(format!(
+                bail!(format!(
                     "Result {result_idx} column name {idx} not a string",
-                )))
+                ))
             }
         }
     }
@@ -84,15 +85,15 @@ fn parse_value(
             Some(v) => Ok(CellValue::Number(v)),
             None => match v.as_f64() {
                 Some(v) => Ok(CellValue::Float(v)),
-                None => Err(worker::Error::from(format!(
+                None => bail!(format!(
                     "Result {result_idx} row {row_idx} cell {cell_idx} had unknown number value: {v}",
-                ))),
+                )),
             },
         },
         serde_json::Value::String(v) => Ok(CellValue::Text(v)),
-        _ => Err(worker::Error::from(format!(
+        _ => bail!(format!(
             "Result {result_idx} row {row_idx} cell {cell_idx} had unknown type",
-        ))),
+        )),
     }
 }
 
@@ -106,9 +107,9 @@ fn parse_rows(
         match row {
             serde_json::Value::Array(row) => {
                 if row.len() != columns.len() {
-                    return Err(worker::Error::from(format!(
+                    bail!(format!(
                         "Result {result_idx} row {idx} had wrong number of cells",
-                    )));
+                    ));
                 }
                 let mut cells = HashMap::with_capacity(columns.len());
                 for (cell_idx, value) in row.into_iter().enumerate() {
@@ -120,9 +121,7 @@ fn parse_rows(
                 result.push(Row { cells })
             }
             _ => {
-                return Err(worker::Error::from(format!(
-                    "Result {result_idx} row {idx} was not an array",
-                )))
+                bail!(format!("Result {result_idx} row {idx} was not an array",))
             }
         }
     }
@@ -138,25 +137,21 @@ fn parse_query_result(result: serde_json::Value, idx: usize) -> Result<QueryResu
                         Some(serde_json::Value::String(msg)) => {
                             Ok(QueryResult::Error((msg.clone(), Meta::default())))
                         }
-                        _ => Err(worker::Error::from(format!(
-                            "Result {idx} error message was not a string",
-                        ))),
+                        _ => bail!(format!("Result {idx} error message was not a string",)),
                     },
-                    _ => Err(worker::Error::from(format!(
-                        "Result {idx} results was not an object",
-                    ))),
+                    _ => bail!(format!("Result {idx} results was not an object",)),
                 };
             }
 
             let results = obj.get("results");
             match results {
                 Some(serde_json::Value::Object(obj)) => {
-                    let columns = obj.get("columns").ok_or_else(|| {
-                        worker::Error::from(format!("Result {idx} had no columns"))
-                    })?;
+                    let columns = obj
+                        .get("columns")
+                        .context(format!("Result {idx} had no columns"))?;
                     let rows = obj
                         .get("rows")
-                        .ok_or_else(|| worker::Error::from(format!("Result {idx} had no rows")))?;
+                        .context(format!("Result {idx} had no rows"))?;
                     match (rows, columns) {
                         (serde_json::Value::Array(rows), serde_json::Value::Array(columns)) => {
                             let columns = parse_columns(columns.to_vec(), idx)?;
@@ -166,22 +161,16 @@ fn parse_query_result(result: serde_json::Value, idx: usize) -> Result<QueryResu
                                 Meta::default(),
                             )))
                         }
-                        _ => Err(worker::Error::from(format!(
+                        _ => bail!(format!(
                             "Result {idx} had rows or columns that were not an array",
-                        ))),
+                        )),
                     }
                 }
-                Some(_) => Err(worker::Error::from(format!(
-                    "Result {idx} was not an object",
-                ))),
-                None => Err(worker::Error::from(format!(
-                    "Result {idx} did not contain results or error",
-                ))),
+                Some(_) => bail!(format!("Result {idx} was not an object",)),
+                None => bail!(format!("Result {idx} did not contain results or error",)),
             }
         }
-        _ => Err(worker::Error::from(format!(
-            "Result {idx} was not an object",
-        ))),
+        _ => bail!(format!("Result {idx} was not an object",)),
     }
 }
 
@@ -194,40 +183,25 @@ impl Connection {
     /// * `pass` - user's password
     pub fn connect(
         url: impl Into<String>,
-        username: impl Into<String>,
-        pass: impl Into<String>,
+        // username: impl Into<String>,
+        // pass: impl Into<String>,
     ) -> Self {
-        let username = username.into();
-        let pass = pass.into();
-        let url = url.into();
-        // Auto-update the URL to start with https:// if no protocol was specified
-        let url = if !url.contains("://") {
-            "https://".to_owned() + &url
-        } else {
-            url
-        };
+        // let username = username.into();
+        // let pass = pass.into();
+        // let url = url.into();
+        // // Auto-update the URL to start with https:// if no protocol was specified
+        // let url = if !url.contains("://") {
+        //     "https://".to_owned() + &url
+        // } else {
+        //     url
+        // };
         Self {
-            url,
-            auth: format!(
-                "Basic {}",
-                base64::engine::general_purpose::STANDARD.encode(format!("{username}:{pass}"))
-            ),
+            url: url.into(),
+            // auth: format!(
+            //     "Basic {}",
+            //     base64::engine::general_purpose::STANDARD.encode(format!("{username}:{pass}"))
+            // ),
         }
-    }
-
-    /// Establishes a database connection from Cloudflare Workers context.
-    /// Expects the context to contain the following secrets defined:
-    /// * `LIBSQL_CLIENT_URL`
-    /// * `LIBSQL_CLIENT_USER`
-    /// * `LIBSQL_CLIENT_PASS`
-    /// # Arguments
-    /// * `ctx` - Cloudflare Workers route context
-    pub fn connect_from_ctx<D>(ctx: &worker::RouteContext<D>) -> Result<Self> {
-        Ok(Self::connect(
-            ctx.secret("LIBSQL_CLIENT_URL")?.to_string(),
-            ctx.secret("LIBSQL_CLIENT_USER")?.to_string(),
-            ctx.secret("LIBSQL_CLIENT_PASS")?.to_string(),
-        ))
     }
 
     /// Executes a single SQL statement
@@ -275,8 +249,6 @@ impl Connection {
         &self,
         stmts: impl IntoIterator<Item = impl Into<Statement>>,
     ) -> Result<Vec<QueryResult>> {
-        let mut headers = Headers::new();
-        headers.append("Authorization", &self.auth).ok();
         // FIXME: serialize and deserialize with existing routines from sqld
         let mut body = "{\"statements\": [".to_string();
         let mut stmts_count = 0;
@@ -288,36 +260,42 @@ impl Connection {
             body.pop();
         }
         body += "]}";
-        let request_init = RequestInit {
-            body: Some(wasm_bindgen::JsValue::from_str(&body)),
-            headers,
-            cf: CfProperties::new(),
-            method: Method::Post,
-            redirect: RequestRedirect::Follow,
-        };
-        let req = Request::new_with_init(&self.url, &request_init)?;
-        let response = Fetch::Request(req).send().await;
-        let resp: String = response?.text().await?;
-        let response_json: serde_json::Value = serde_json::from_str(&resp)?;
-        match response_json {
-            serde_json::Value::Array(results) => {
-                if results.len() != stmts_count {
-                    Err(worker::Error::from(format!(
-                        "Response array did not contain expected {stmts_count} results"
-                    )))
-                } else {
-                    let mut query_results: Vec<QueryResult> = Vec::with_capacity(stmts_count);
-                    for (idx, result) in results.into_iter().enumerate() {
-                        query_results.push(parse_query_result(result, idx)?);
-                    }
 
-                    Ok(query_results)
+        let req = http::Request::builder()
+            .uri(&self.url)
+            .method("POST")
+            // .header("Authorization", &self.auth)
+            .body(Some(body.clone().into()))?;
+
+        let res = match spin_sdk::outbound_http::send_request(req) {
+            Ok(res) => res,
+            Err(e) => bail!(format!("Error sending request to database: {}", e)),
+        };
+
+        match res.body() {
+            Some(b) => {
+                let response_json: Value = serde_json::from_slice(b)?;
+
+                match response_json {
+                    serde_json::Value::Array(results) => {
+                        if results.len() != stmts_count {
+                            bail!(format!(
+                                "Response array did not contain expected {stmts_count} results"
+                            ))
+                        } else {
+                            let mut query_results: Vec<QueryResult> =
+                                Vec::with_capacity(stmts_count);
+                            for (idx, result) in results.into_iter().enumerate() {
+                                query_results.push(parse_query_result(result, idx)?);
+                            }
+
+                            Ok(query_results)
+                        }
+                    }
+                    e => bail!(format!("Error: {} ({:?})", e, body)),
                 }
             }
-            e => Err(worker::Error::from(format!(
-                "Error: {} ({:?})",
-                e, request_init.body
-            ))),
+            None => bail!("response from database was empty"),
         }
     }
 
